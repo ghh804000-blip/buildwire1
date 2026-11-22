@@ -465,7 +465,8 @@ class _LadderEditorState extends State<LadderEditor> {
       canPop: !_dirty,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
-        if (!await _confirmDiscard() || !mounted) return;
+        if (!await _confirmDiscard()) return;
+        if (!context.mounted) return;
         Navigator.of(context).pop();
       },
       child: ScaffoldMessenger(
