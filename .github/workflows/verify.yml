@@ -1,0 +1,55 @@
+name: Verify & Build (Windows + Web)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify-and-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Check Flutter version
+        run: flutter --version
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Build Web Release
+        run: flutter build web --release
+
+      - name: Upload Windows Build Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildwire-windows-release
+          path: build/windows/x64/runner/Release/
+          retention-days: 7
+
+      - name: Upload Web Build Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildwire-web-release
+          path: build/web/
+          retention-days: 7
