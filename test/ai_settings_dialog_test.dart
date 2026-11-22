@@ -111,4 +111,69 @@ void main() {
     expect(jsonEncode(app.aiSettings!.toJson()), isNot(contains('sk-test')), reason: 'the key never goes into preferences');
     app.dispose();
   });
+
+  testWidgets('Google Gemini preset picks gemini-2.5-flash by default and allows manual model entry', (tester) async {
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final list = jsonDecode(File('assets/devices/index.json').readAsStringSync()) as List<dynamic>;
+    final defs = {for (final item in list) (item as Map<String, dynamic>)['id'] as String: DeviceDef.fromJson(item)};
+    final secrets = MemorySecretStore();
+    final app = AppState(defs, null, sound: Quiet(), secrets: secrets);
+    final client = MockClient((r) async {
+      if (r.url.path.endsWith('/messages')) fail('Gemini preset should not hit Anthropic /messages');
+      if (r.url.host == 'generativelanguage.googleapis.com' && r.url.path == '/v1beta/openai/models') {
+        return json({
+          'object': 'list',
+          'data': [
+            {'id': 'models/embedding-001', 'object': 'model'},
+            {'id': 'models/gemini-2.5-flash', 'object': 'model'},
+          ],
+        });
+      }
+      if (r.url.host == 'generativelanguage.googleapis.com' && r.url.path == '/v1beta/openai/chat/completions') {
+        return json({
+          'choices': [
+            {'message': {'role': 'assistant', 'content': 'ok'}},
+          ],
+        });
+      }
+      return json({'error': 'nope'}, 404);
+    });
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(false),
+      home: Builder(
+        builder: (context) => TextButton(onPressed: () => showAiSettings(context, app, connector: AiConnector(client: client)), child: const Text('open')),
+      ),
+    ));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('ai-preset-Google Gemini (AI Studio)')));
+    await tester.pump();
+    expect(find.text(kGeminiBaseUrl), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('ai-key')), 'AIza-test-key');
+    await tester.tap(find.byKey(const ValueKey('ai-connect')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Model (2 tersedia)'), findsOneWidget);
+    expect(tester.widget<DropdownMenu<String>>(find.byKey(const ValueKey('ai-model'))).initialSelection, 'gemini-2.5-flash');
+
+    await tester.ensureVisible(find.byKey(const ValueKey('ai-model-mode')));
+    await tester.tap(find.byKey(const ValueKey('ai-model-mode')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('ai-model-typed')), 'gemini-2.5-pro');
+    await tester.ensureVisible(find.byKey(const ValueKey('ai-model-check')));
+    await tester.tap(find.byKey(const ValueKey('ai-model-check')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('ai-save')));
+    await tester.pumpAndSettle();
+    expect(app.aiSettings!.baseUrl, kGeminiBaseUrl);
+    expect(app.aiSettings!.model, 'gemini-2.5-pro');
+    expect(app.aiSettings!.format, ApiFormat.openai);
+    expect(secrets.key, 'AIza-test-key');
+    expect(jsonEncode(app.aiSettings!.toJson()), isNot(contains('AIza-test-key')));
+    app.dispose();
+  });
 }

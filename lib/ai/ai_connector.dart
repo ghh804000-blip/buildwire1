@@ -97,7 +97,7 @@ class AiConnector {
     base = base.replaceFirst(RegExp(r'/+$'), '');
     final uri = Uri.tryParse(base);
     if (uri == null || uri.host.isEmpty || !(uri.scheme == 'http' || uri.scheme == 'https')) return const [];
-    return [base, if (!RegExp(r'/v\d+[a-z]*$').hasMatch(base)) '$base/v1'];
+    return [base, if (!RegExp(r'(/v\d+[a-z]*|/openai)$').hasMatch(base)) '$base/v1'];
   }
 
   /// True when the key would travel unencrypted to another machine.
@@ -108,6 +108,9 @@ class AiConnector {
     return !(host == 'localhost' || host == '127.0.0.1' || host == '::1');
   }
 
+  /// True for Google Gemini's OpenAI-compatible endpoint, which serves only OpenAI routes.
+  static bool isGeminiOpenAi(String base) => Uri.tryParse(base)?.host.toLowerCase() == 'generativelanguage.googleapis.com';
+
   /// Finds the base URL that answers and the models on offer.
   Future<ConnectResult> connect(String input, String key) async {
     final bases = candidateBases(input);
@@ -115,7 +118,8 @@ class AiConnector {
     final errors = <AiError>[];
     for (final base in bases) {
       // Each format logs in differently (Anthropic's own API refuses a Bearer key), so try both before giving up.
-      for (final format in [ApiFormat.openai, ApiFormat.anthropic]) {
+      final formats = isGeminiOpenAi(base) ? const [ApiFormat.openai] : const [ApiFormat.openai, ApiFormat.anthropic];
+      for (final format in formats) {
         try {
           final models = await _listModels(base, key, format);
           return ConnectResult(baseUrl: base, models: models);
@@ -132,6 +136,7 @@ class AiConnector {
 
   Future<List<AiModel>> _listModels(String base, String key, ApiFormat format) async {
     final models = <AiModel>[];
+    final stripPrefix = isGeminiOpenAi(base);
     String? after;
     for (var page = 0; page < 20; page++) {
       final uri = Uri.parse('$base/models${after == null ? '' : '?after_id=${Uri.encodeQueryComponent(after)}'}');
@@ -139,7 +144,7 @@ class AiConnector {
       final data = json is Map<String, dynamic> ? json['data'] : (json is List ? json : null);
       if (data is! List) throw AiError('Jawaban /models tidak berisi daftar model.');
       for (final item in data) {
-        final model = _parseModel(item);
+        final model = _parseModel(item, stripModelsPrefix: stripPrefix);
         if (model != null) models.add(model);
       }
       // Anthropic pages its list; OpenAI-style lists come whole.
@@ -154,12 +159,16 @@ class AiConnector {
     return models;
   }
 
-  static AiModel? _parseModel(Object? item) {
-    if (item is String) return AiModel(id: item);
+  static AiModel? _parseModel(Object? item, {bool stripModelsPrefix = false}) {
+    if (item is String) {
+      final id = stripModelsPrefix && item.startsWith('models/') ? item.substring(7) : item;
+      return AiModel(id: id);
+    }
     if (item is! Map<String, dynamic>) return null;
-    final id = item['id'] ?? item['name'] ?? item['model'];
-    if (id is! String || id.isEmpty) return null;
-    final label = [item['display_name'], item['upstream_label'], item['name']].whereType<String>().where((s) => s.isNotEmpty && s != id).firstOrNull;
+    final rawId = item['id'] ?? item['name'] ?? item['model'];
+    if (rawId is! String || rawId.isEmpty) return null;
+    final id = stripModelsPrefix && rawId.startsWith('models/') ? rawId.substring(7) : rawId;
+    final label = [item['display_name'], item['upstream_label'], item['name']].whereType<String>().where((s) => s.isNotEmpty && s != id && s != rawId).firstOrNull;
     final pricing = item['pricing'];
     double? price(String key) {
       if (pricing is! Map<String, dynamic>) return null;
@@ -177,13 +186,19 @@ class AiConnector {
       try {
         final reply = await chat(base, key, format, model, [
           {'role': 'user', 'content': 'Balas dengan satu kata: ok'},
-        ], maxTokens: 64);
+        ], maxTokens: 256);
         return reply.valid ? const FormatCheck.ok() : const FormatCheck.failed('Jawaban tidak sesuai format.');
       } on AiError catch (error) {
         return FormatCheck.failed(error.message);
       }
     }
 
+    if (isGeminiOpenAi(base)) {
+      return {
+        ApiFormat.anthropic: const FormatCheck.failed('Endpoint Google Gemini hanya mendukung format OpenAI.'),
+        ApiFormat.openai: await check(ApiFormat.openai),
+      };
+    }
     final results = await Future.wait([check(ApiFormat.anthropic), check(ApiFormat.openai)]);
     return {ApiFormat.anthropic: results[0], ApiFormat.openai: results[1]};
   }
@@ -297,15 +312,36 @@ class AiConnector {
     if (response.statusCode == 401 || response.statusCode == 403) {
       throw _AuthError('API key ditolak (HTTP ${response.statusCode}). ${_errorText(json, text)}'.trim());
     }
+    if (response.statusCode == 429) {
+      throw AiError('Batas kuota atau rate-limit tercapai (HTTP 429). ${_errorText(json, text)}'.trim(), transient: true);
+    }
     if (response.statusCode >= 400) {
       final code = response.statusCode;
-      throw AiError('HTTP $code: ${_errorText(json, text)}'.trim(), transient: code == 408 || code == 409 || code == 425 || code == 429 || code >= 500);
+      final detail = _errorText(json, text);
+      if (code == 400 && _looksLikeInvalidKey(json, detail)) {
+        throw _AuthError('API key ditolak (HTTP 400). $detail'.trim());
+      }
+      throw AiError('HTTP $code: $detail'.trim(), transient: code == 408 || code == 409 || code == 425 || code >= 500);
     }
     if (json == null) throw AiError('Jawaban endpoint bukan JSON.', transient: true);
     return json;
   }
 
+  static bool _looksLikeInvalidKey(Object? json, String detail) {
+    final lower = detail.toLowerCase();
+    if (lower.contains('api key') || lower.contains('api_key_invalid')) return true;
+    final first = json is List && json.isNotEmpty ? json.first : json;
+    if (first is Map<String, dynamic>) {
+      final err = first['error'];
+      if (err is Map<String, dynamic> && err['details'] is List) {
+        return (err['details'] as List).any((d) => d is Map && d['reason'] == 'API_KEY_INVALID');
+      }
+    }
+    return false;
+  }
+
   static String _errorText(Object? json, String raw) {
+    if (json is List && json.isNotEmpty) return _errorText(json.first, raw);
     if (json is Map<String, dynamic>) {
       final error = json['error'];
       if (error is Map<String, dynamic> && error['message'] is String) return error['message'] as String;

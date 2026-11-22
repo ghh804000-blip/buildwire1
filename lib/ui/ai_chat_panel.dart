@@ -327,7 +327,7 @@ class _AiChatPanelState extends State<AiChatPanel> {
         Text('Hubungkan AI dulu', style: uiText(15, tokens.text, weight: 600)),
         const SizedBox(height: 6),
         Text(
-          'Pakai API key milikmu: Claude, DeepSeek, OpenAI, atau endpoint lain yang kompatibel.',
+          'Pakai API key milikmu: Gemini, Claude, DeepSeek, OpenAI, atau endpoint lain yang kompatibel.',
           textAlign: TextAlign.center,
           style: uiText(12.5, tokens.textMuted, height: 1.45),
         ),

@@ -6,8 +6,13 @@ import '../ai/ai_settings.dart';
 import '../app_state.dart';
 import 'theme.dart';
 
+/// Google AI Studio's official OpenAI-compatible base URL and fast free-tier default model.
+const String kGeminiBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+const String kGeminiDefaultModel = 'gemini-2.5-flash';
+
 /// Common endpoints. Anything else is typed in as a custom address.
 const List<(String, String)> kAiPresets = [
+  ('Google Gemini (AI Studio)', kGeminiBaseUrl),
   ('Anthropic', 'https://api.anthropic.com/v1'),
   ('OpenAI', 'https://api.openai.com/v1'),
   ('DeepSeek', 'https://api.deepseek.com/v1'),
@@ -45,6 +50,7 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
   Map<ApiFormat, FormatCheck>? _checks;
   ApiFormat? _format;
   ToolCheck? _tools;
+  bool _manualModel = false;
 
   /// Bumped on every new connect or model choice, so a slow earlier answer can't overwrite a newer one.
   int _generation = 0;
@@ -74,14 +80,30 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
   }
 
   void _endpointChanged() {
-    if (_found == null && _error == null) return;
+    if (_found == null && _error == null && !_manualModel) return;
     setState(() {
       _generation++;
       _found = null;
       _checks = null;
       _tools = null;
       _error = null;
+      _manualModel = false;
     });
+  }
+
+  String? _pickInitialModel(String baseUrl, List<String> ids) {
+    if (_model != null && ids.contains(_model)) return _model;
+    final typed = _typedModel.text.trim();
+    if (ids.isEmpty) return typed.isNotEmpty ? typed : (AiConnector.isGeminiOpenAi(baseUrl) ? kGeminiDefaultModel : null);
+    if (AiConnector.isGeminiOpenAi(baseUrl)) {
+      if (ids.contains(kGeminiDefaultModel)) return kGeminiDefaultModel;
+      final flash = ids.where((id) {
+        final lower = id.toLowerCase();
+        return lower.contains('gemini') && !lower.contains('embedding');
+      }).firstOrNull;
+      if (flash != null) return flash;
+    }
+    return ids.first;
   }
 
   Future<void> _connect() async {
@@ -97,11 +119,13 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
       final found = await _ai.connect(_url.text, _key.text.trim());
       if (!mounted || generation != _generation) return;
       final ids = found.models.map((m) => m.id).toList();
-      final keep = _model != null && ids.contains(_model);
+      final picked = _pickInitialModel(found.baseUrl, ids);
       setState(() {
         _found = found;
         _url.text = found.baseUrl;
-        _model = keep ? _model : (ids.isEmpty ? (_typedModel.text.trim().isEmpty ? null : _typedModel.text.trim()) : ids.first);
+        _model = picked;
+        if (picked != null) _typedModel.text = picked;
+        _manualModel = ids.isEmpty;
       });
       if (_model != null) await _probe(generation);
     } on AiError catch (error) {
@@ -112,10 +136,13 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
   }
 
   Future<void> _chooseModel(String? model) async {
-    if (model == null || model.isEmpty || model == _model && _checks != null) return;
+    final trimmed = model?.trim();
+    if (trimmed == null || trimmed.isEmpty) return;
+    if (trimmed == _model && (_checks?.values.any((c) => c.ok) ?? false)) return;
     final generation = ++_generation;
     setState(() {
-      _model = model;
+      _model = trimmed;
+      _typedModel.text = trimmed;
       _checks = null;
       _tools = null;
       _error = null;
@@ -224,6 +251,9 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                       visualDensity: VisualDensity.compact,
                       onSelected: (_) {
                         _url.text = url;
+                        if (url == kGeminiBaseUrl && !_typedModel.text.toLowerCase().contains('gemini')) {
+                          _typedModel.text = kGeminiDefaultModel;
+                        }
                         _endpointChanged();
                         setState(() {});
                       },
@@ -255,7 +285,7 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                 style: uiText(13.5, tokens.text),
                 onChanged: (_) => _endpointChanged(),
                 decoration: InputDecoration(
-                  hintText: 'sk-…  (boleh kosong untuk Ollama lokal)',
+                  hintText: 'AIza… / sk-…  (boleh kosong untuk Ollama lokal)',
                   suffixIcon: IconButton(
                     tooltip: _hideKey ? 'Tampilkan' : 'Sembunyikan',
                     icon: Icon(_hideKey ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 18),
@@ -286,10 +316,13 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                 const SizedBox(height: 18),
                 Divider(color: tokens.border, height: 1),
                 const SizedBox(height: 16),
-                _label(tokens, found.models.isEmpty ? 'Model (ketik namanya)' : 'Model (${found.models.length} tersedia)'),
-                if (found.models.isEmpty) ...[
-                  _note(tokens, Icons.info_outline, tokens.textMuted, 'Endpoint ini tidak memberi daftar model. ${found.modelsError ?? ''}'.trim()),
-                  const SizedBox(height: 8),
+                _label(tokens, found.models.isEmpty || _manualModel ? 'Model (ketik namanya)' : 'Model (${found.models.length} tersedia)'),
+                if (found.models.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _note(tokens, Icons.info_outline, tokens.textMuted, 'Endpoint ini tidak memberi daftar model. ${found.modelsError ?? ''}'.trim()),
+                  ),
+                if (found.models.isEmpty || _manualModel)
                   Row(
                     children: [
                       Expanded(
@@ -297,20 +330,36 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                           key: const ValueKey('ai-model-typed'),
                           controller: _typedModel,
                           style: uiText(13.5, tokens.text),
-                          decoration: const InputDecoration(hintText: 'nama-model'),
+                          decoration: InputDecoration(
+                            hintText: AiConnector.isGeminiOpenAi(found.baseUrl) ? kGeminiDefaultModel : 'nama-model',
+                          ),
+                          onChanged: (value) {
+                            if (value.trim() != _model && (_checks != null || _tools != null || _error != null)) {
+                              setState(() {
+                                _generation++;
+                                _checks = null;
+                                _tools = null;
+                                _error = null;
+                              });
+                            }
+                          },
                           onSubmitted: _chooseModel,
                         ),
                       ),
                       const SizedBox(width: 8),
-                      OutlinedButton(onPressed: _busy != null ? null : () => _chooseModel(_typedModel.text.trim()), child: const Text('Periksa')),
+                      OutlinedButton(
+                        key: const ValueKey('ai-model-check'),
+                        onPressed: _busy != null ? null : () => _chooseModel(_typedModel.text.trim()),
+                        child: const Text('Periksa'),
+                      ),
                     ],
-                  ),
-                ] else
+                  )
+                else
                   LayoutBuilder(
                     builder: (context, box) => DropdownMenu<String>(
                       key: const ValueKey('ai-model'),
                       width: box.maxWidth,
-                      initialSelection: _model,
+                      initialSelection: found.models.any((m) => m.id == _model) ? _model : null,
                       enableFilter: true,
                       requestFocusOnTap: true,
                       menuHeight: 320,
@@ -327,6 +376,23 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                                 : Text('\$${model.priceIn}/\$${model.priceOut}', style: uiText(11, tokens.textMuted)),
                           ),
                       ],
+                    ),
+                  ),
+                if (found.models.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton(
+                        key: const ValueKey('ai-model-mode'),
+                        onPressed: _busy != null ? null : () => setState(() => _manualModel = !_manualModel),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: Text(_manualModel ? 'Pilih dari daftar model' : 'Ketik nama model manual', style: uiText(12, tokens.accent)),
+                      ),
                     ),
                   ),
                 if (_checks != null) ...[

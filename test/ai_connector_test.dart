@@ -39,6 +39,10 @@ void main() {
       expect(AiConnector.candidateBases('http://43.157.206.49:20128/v1/chat/completions'), ['http://43.157.206.49:20128/v1']);
       expect(AiConnector.candidateBases('openrouter.ai/api/v1'), ['https://openrouter.ai/api/v1']);
       expect(AiConnector.candidateBases('https://open.bigmodel.cn/api/paas/v4'), ['https://open.bigmodel.cn/api/paas/v4']);
+      expect(AiConnector.candidateBases('https://generativelanguage.googleapis.com/v1beta/openai/'),
+          ['https://generativelanguage.googleapis.com/v1beta/openai']);
+      expect(AiConnector.candidateBases('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
+          ['https://generativelanguage.googleapis.com/v1beta/openai']);
       expect(AiConnector.candidateBases(''), isEmpty);
       expect(AiConnector.candidateBases('ftp://x'), isEmpty);
     });
@@ -210,6 +214,58 @@ void main() {
     expect(back!.baseUrl, settings.baseUrl);
     expect(back.format, ApiFormat.openai);
     expect(AiSettings.fromJson({'baseUrl': 'x', 'model': 'y', 'format': 'gemini'}), isNull);
+  });
+
+  test('Google Gemini OpenAI endpoint normalizes models, skips /messages, and clarifies HTTP 400/429 errors', () async {
+    var hitMessages = false;
+    final listClient = MockClient((r) async {
+      if (r.url.path.endsWith('/messages')) {
+        hitMessages = true;
+        return json({'error': 'not found'}, 404);
+      }
+      if (r.url.path == '/v1beta/openai/models' && bearer(r, 'AIza-test')) {
+        return json({
+          'object': 'list',
+          'data': [
+            {'id': 'models/gemini-2.5-flash', 'display_name': 'Gemini 2.5 Flash'},
+            {'id': 'models/embedding-001', 'name': 'models/embedding-001'},
+          ],
+        });
+      }
+      if (r.url.path == '/v1beta/openai/chat/completions' && bearer(r, 'AIza-test')) return json(openAiCompletion);
+      return json({'error': {'message': 'nope'}}, 404);
+    });
+    final ai = AiConnector(client: listClient);
+    final found = await ai.connect('https://generativelanguage.googleapis.com/v1beta/openai', 'AIza-test');
+    expect(found.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    expect(found.models.map((m) => m.id), ['embedding-001', 'gemini-2.5-flash']);
+    expect(found.models.last.label, 'Gemini 2.5 Flash');
+    final checks = await ai.probeFormats(found.baseUrl, 'AIza-test', 'gemini-2.5-flash');
+    expect(hitMessages, isFalse);
+    expect(checks[ApiFormat.openai]!.ok, isTrue);
+    expect(checks[ApiFormat.anthropic]!.ok, isFalse);
+    expect(AiConnector.preferredFormat('gemini-2.5-flash', checks), ApiFormat.openai);
+
+    final badKeyClient = MockClient((r) async => json([
+          {
+            'error': {
+              'code': 400,
+              'message': 'Please pass a valid API key',
+              'details': [
+                {'reason': 'API_KEY_INVALID'},
+              ],
+            },
+          },
+        ], 400));
+    await expectLater(
+      AiConnector(client: badKeyClient).connect('https://generativelanguage.googleapis.com/v1beta/openai', 'bad'),
+      throwsA(isA<AiError>().having((e) => e.message, 'message', allOf(contains('ditolak'), contains('400')))),
+    );
+
+    final quotaClient = MockClient((r) async => json({'error': {'message': 'Resource exhausted'}}, 429));
+    final quotaChecks = await AiConnector(client: quotaClient).probeFormats('https://generativelanguage.googleapis.com/v1beta/openai', 'k', 'gemini-2.5-flash');
+    expect(quotaChecks[ApiFormat.openai]!.ok, isFalse);
+    expect(quotaChecks[ApiFormat.openai]!.error, allOf(contains('429'), contains('kuota')));
   });
 
   // Runs only with a real endpoint: BUILDWIRE_AI_URL and BUILDWIRE_AI_KEY in the environment. Never commit a key.
