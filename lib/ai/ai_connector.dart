@@ -111,6 +111,24 @@ class AiConnector {
   /// True for Google Gemini's OpenAI-compatible endpoint, which serves only OpenAI routes.
   static bool isGeminiOpenAi(String base) => Uri.tryParse(base)?.host.toLowerCase() == 'generativelanguage.googleapis.com';
 
+  // shortcut: Google /models omits pricing so Free Tier is inferred by model family, upgrade if /models exposes pricing.
+  static bool isGeminiFreeModel(String id) {
+    final lower = id.toLowerCase();
+    if (lower.contains('embedding') || lower.contains('imagen') || lower.contains('veo') || lower.contains('tts') || lower.contains('image')) {
+      return false;
+    }
+    return (lower.startsWith('gemini-') && lower.contains('flash')) || lower.startsWith('gemma-');
+  }
+
+  /// Strips a UI-only `:free` suffix if typed manually for Google Gemini, which rejects `:free` in API model IDs.
+  static String normalizeModelId(String base, String model) {
+    final trimmed = model.trim();
+    if (isGeminiOpenAi(base) && trimmed.toLowerCase().endsWith(':free')) {
+      return trimmed.substring(0, trimmed.length - 5).trim();
+    }
+    return trimmed;
+  }
+
   /// Finds the base URL that answers and the models on offer.
   Future<ConnectResult> connect(String input, String key) async {
     final bases = candidateBases(input);

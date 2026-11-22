@@ -266,6 +266,22 @@ void main() {
     final quotaChecks = await AiConnector(client: quotaClient).probeFormats('https://generativelanguage.googleapis.com/v1beta/openai', 'k', 'gemini-2.5-flash');
     expect(quotaChecks[ApiFormat.openai]!.ok, isFalse);
     expect(quotaChecks[ApiFormat.openai]!.error, allOf(contains('429'), contains('kuota')));
+
+    expect(AiConnector.isGeminiFreeModel('gemini-2.5-flash'), isTrue);
+    expect(AiConnector.isGeminiFreeModel('gemini-3.5-flash-lite'), isTrue);
+    expect(AiConnector.isGeminiFreeModel('gemma-3-27b-it'), isTrue);
+    expect(AiConnector.isGeminiFreeModel('gemini-2.5-pro'), isFalse);
+    expect(AiConnector.isGeminiFreeModel('embedding-001'), isFalse);
+    expect(AiConnector.isGeminiFreeModel('gemini-2.5-flash-image'), isFalse);
+
+    expect(
+      AiConnector.normalizeModelId('https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-2.5-flash :free'),
+      'gemini-2.5-flash',
+    );
+    expect(
+      AiConnector.normalizeModelId('https://openrouter.ai/api/v1', 'google/gemma-4-31b-it:free'),
+      'google/gemma-4-31b-it:free',
+    );
   });
 
   // Runs only with a real endpoint: BUILDWIRE_AI_URL and BUILDWIRE_AI_KEY in the environment. Never commit a key.

@@ -112,7 +112,7 @@ void main() {
     app.dispose();
   });
 
-  testWidgets('Google Gemini preset picks gemini-2.5-flash by default and allows manual model entry', (tester) async {
+  testWidgets('Google Gemini preset picks gemini-2.5-flash by default and shows :free label for free models', (tester) async {
     tester.view.physicalSize = const Size(1200, 1200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -128,10 +128,13 @@ void main() {
           'data': [
             {'id': 'models/embedding-001', 'object': 'model'},
             {'id': 'models/gemini-2.5-flash', 'object': 'model'},
+            {'id': 'models/gemini-2.5-pro', 'object': 'model'},
           ],
         });
       }
       if (r.url.host == 'generativelanguage.googleapis.com' && r.url.path == '/v1beta/openai/chat/completions') {
+        final body = jsonDecode(r.body) as Map<String, dynamic>;
+        expect(body['model'], isNot(endsWith(':free')));
         return json({
           'choices': [
             {'message': {'role': 'assistant', 'content': 'ok'}},
@@ -156,13 +159,18 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('ai-connect')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Model (2 tersedia)'), findsOneWidget);
-    expect(tester.widget<DropdownMenu<String>>(find.byKey(const ValueKey('ai-model'))).initialSelection, 'gemini-2.5-flash');
+    expect(find.text('Model (3 tersedia)'), findsOneWidget);
+    final menu = tester.widget<DropdownMenu<String>>(find.byKey(const ValueKey('ai-model')));
+    expect(menu.initialSelection, 'gemini-2.5-flash');
+    final labels = {for (final e in menu.dropdownMenuEntries) e.value: e.label};
+    expect(labels['gemini-2.5-flash'], 'gemini-2.5-flash :free');
+    expect(labels['gemini-2.5-pro'], 'gemini-2.5-pro');
+    expect(labels['embedding-001'], 'embedding-001');
 
     await tester.ensureVisible(find.byKey(const ValueKey('ai-model-mode')));
     await tester.tap(find.byKey(const ValueKey('ai-model-mode')));
     await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const ValueKey('ai-model-typed')), 'gemini-2.5-pro');
+    await tester.enterText(find.byKey(const ValueKey('ai-model-typed')), 'gemini-2.5-flash:free');
     await tester.ensureVisible(find.byKey(const ValueKey('ai-model-check')));
     await tester.tap(find.byKey(const ValueKey('ai-model-check')));
     await tester.pumpAndSettle();
@@ -170,7 +178,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('ai-save')));
     await tester.pumpAndSettle();
     expect(app.aiSettings!.baseUrl, kGeminiBaseUrl);
-    expect(app.aiSettings!.model, 'gemini-2.5-pro');
+    expect(app.aiSettings!.model, 'gemini-2.5-flash');
     expect(app.aiSettings!.format, ApiFormat.openai);
     expect(secrets.key, 'AIza-test-key');
     expect(jsonEncode(app.aiSettings!.toJson()), isNot(contains('AIza-test-key')));

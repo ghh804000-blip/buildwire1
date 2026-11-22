@@ -94,9 +94,14 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
   String? _pickInitialModel(String baseUrl, List<String> ids) {
     if (_model != null && ids.contains(_model)) return _model;
     final typed = _typedModel.text.trim();
-    if (ids.isEmpty) return typed.isNotEmpty ? typed : (AiConnector.isGeminiOpenAi(baseUrl) ? kGeminiDefaultModel : null);
+    if (ids.isEmpty) {
+      final fallback = AiConnector.normalizeModelId(baseUrl, typed);
+      return fallback.isNotEmpty ? fallback : (AiConnector.isGeminiOpenAi(baseUrl) ? kGeminiDefaultModel : null);
+    }
     if (AiConnector.isGeminiOpenAi(baseUrl)) {
       if (ids.contains(kGeminiDefaultModel)) return kGeminiDefaultModel;
+      final free = ids.where(AiConnector.isGeminiFreeModel).firstOrNull;
+      if (free != null) return free;
       final flash = ids.where((id) {
         final lower = id.toLowerCase();
         return lower.contains('gemini') && !lower.contains('embedding');
@@ -136,13 +141,14 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
   }
 
   Future<void> _chooseModel(String? model) async {
-    final trimmed = model?.trim();
-    if (trimmed == null || trimmed.isEmpty) return;
-    if (trimmed == _model && (_checks?.values.any((c) => c.ok) ?? false)) return;
+    if (model == null) return;
+    final normalized = AiConnector.normalizeModelId(_found?.baseUrl ?? _url.text, model);
+    if (normalized.isEmpty) return;
+    if (normalized == _model && (_checks?.values.any((c) => c.ok) ?? false)) return;
     final generation = ++_generation;
     setState(() {
-      _model = trimmed;
-      _typedModel.text = trimmed;
+      _model = normalized;
+      _typedModel.text = normalized;
       _checks = null;
       _tools = null;
       _error = null;
@@ -370,7 +376,11 @@ class _AiSettingsDialogState extends State<_AiSettingsDialog> {
                         for (final model in found.models)
                           DropdownMenuEntry(
                             value: model.id,
-                            label: model.display,
+                            label: AiConnector.isGeminiOpenAi(found.baseUrl) &&
+                                    AiConnector.isGeminiFreeModel(model.id) &&
+                                    !model.display.toLowerCase().contains(':free')
+                                ? '${model.display} :free'
+                                : model.display,
                             trailingIcon: model.priceIn == null
                                 ? null
                                 : Text('\$${model.priceIn}/\$${model.priceOut}', style: uiText(11, tokens.textMuted)),
